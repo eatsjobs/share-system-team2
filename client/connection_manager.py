@@ -174,8 +174,18 @@ class ConnectionManager(object):
 
     def do_upload(self, data):
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+
+        # se è minore di 4 mega normal upload
+        if os.path.getsize(filepath) < self.cfg['chunk_upload_threshold']:
+            self._do_upload(data)
+        else:
+            self.do_mega_upload(data)
+
+    def _do_upload(self, data):
         url = ''.join([self.files_url, data['filepath']])
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_upload', url, data))
+        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+
+        self.logger.info('{}: URL: {} - DATA: {} '.format('_do_upload', url, data))
         _file = {'file': (open(filepath, 'rb'))}
 
         try:
@@ -185,7 +195,6 @@ class ConnectionManager(object):
             self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_upload', url, e))
         else:
             event_timestamp = json.loads(r.text)
-
             return event_timestamp
         return False
 
