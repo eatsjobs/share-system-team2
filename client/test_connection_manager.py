@@ -43,6 +43,7 @@ TEST_CFG = {
     "user": "user",
     "pass": "pass",
     "activate": True,
+    "chunk_upload_threshold": 4194304
 }
 
 

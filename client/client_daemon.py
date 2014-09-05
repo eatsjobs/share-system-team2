@@ -71,6 +71,8 @@ class Daemon(RegexMatchingEventHandler):
     DEF_CONF['api_suffix'] = '/API/V1/'
     DEF_CONF['server_address'] = 'http://localhost:5000'
 
+    DEF_CONF['chunk_upload_threshold'] = 4194304  # in byte
+
     IGNORED_REGEX = ['.*\.[a-zA-z]+?#',  # Libreoffice suite temporary file ignored
                      '.*\.[a-zA-Z]+?~',  # gedit issue solved ignoring this pattern:
                      # gedit first delete file, create, and move to dest_path *.txt~
