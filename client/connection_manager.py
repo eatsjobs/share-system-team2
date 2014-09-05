@@ -189,6 +189,33 @@ class ConnectionManager(object):
             return event_timestamp
         return False
 
+    def do_mega_upload(self, data):
+        chunk_size = 1048576 # 1MB
+        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        size_of_file = os.path.getsize(filepath) # size of file in byte
+        url = ''.join([self.files_url, data['filepath']])
+
+        with open(filepath, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                offset = f.tell()
+                try:
+                    r = requests.post(url, auth=self.auth, data={'md5': data['md5'], 'chunk': chunk, 'offset': offset})
+                    r.raise_for_status()
+                    if r.status_code == 201:
+                        # upload of file completed 201
+                        return True
+                    elif r.status_code == 200:
+                        # chunk completed 200
+                        print (100 * offset) / size_of_file, "% Uploaded"
+                except ConnectionManager.EXCEPTIONS_CATCHED as e:
+                    # f.seek(0)
+                    print e
+                    break
+
+
     def do_modify(self, data):
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
         url = ''.join([self.files_url, data['filepath']])
