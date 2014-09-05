@@ -8,6 +8,7 @@ import json
 import httpretty
 import time
 import shutil
+import hashlib
 
 # API:
 # - GET /diffs, con parametro timestamp
@@ -380,6 +381,34 @@ class TestConnectionManager(unittest.TestCase):
 
         response = self.cm.do_get_server_snapshot('')
         self.assertEqual(json.dumps(response), js)
+
+    @httpretty.activate
+    def test_mega_upload(self):
+        data = {'filepath': 'test_mega_file.txt'}
+        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        f = open(filepath, 'wb')
+        f.write('a' * 10000000)
+        f.close()
+        data['md5'] = hashlib.md5(open(filepath, 'rb').read()).digest()
+
+        url = ''.join((self.files_url, 'test_mega_file.txt'))
+        httpretty.register_uri(httpretty.POST, url, status=200)
+        status_code = self.cm.do_upload(data)
+
+        self.assertEqual(status_code, None)
+
+    @httpretty.activate
+    def test_mega_upload_no_connection(self):
+        data = {'filepath': 'test_mega_file.txt'}
+        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+        f = open(filepath, 'wb')
+        f.write('a' * 10000000)
+        f.close()
+        data['md5'] = hashlib.md5(open(filepath, 'rb').read()).digest()
+
+        url = ''.join((self.files_url, 'test_mega_file.txt'))
+        httpretty.register_uri(httpretty.POST, url, status=404)
+        self.cm.do_mega_upload(data)
 
     def tearDown(self):
         httpretty.disable()
