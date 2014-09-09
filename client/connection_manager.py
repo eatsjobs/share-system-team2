@@ -28,7 +28,7 @@ class ConnectionManager(object):
     EXCEPTIONS_CATCHED = (requests.HTTPError,
                           requests.exceptions.ConnectionError,
                           requests.exceptions.MissingSchema,
-                        )
+    )
 
     def __init__(self, cfg, logging_level=logging.ERROR):
         self.load_cfg(cfg)
@@ -175,13 +175,13 @@ class ConnectionManager(object):
     def do_upload(self, data):
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
 
-        # se è minore di 4 mega normal upload
+        # se è minore della soglia normal upload
         if os.path.getsize(filepath) < self.cfg['chunk_upload_threshold']:
-            self._do_upload(data)
+            self._do_normal_upload(data)
         else:
             self.do_mega_upload(data)
 
-    def _do_upload(self, data):
+    def _do_normal_upload(self, data):
         url = ''.join([self.files_url, data['filepath']])
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
 
@@ -199,110 +199,147 @@ class ConnectionManager(object):
         return False
 
     def do_mega_upload(self, data):
-        chunk_size = 1048576 # 1MB
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
-        size_of_file = os.path.getsize(filepath) # size of file in byte
+        size_of_file = os.path.getsize(filepath)  # size of file in byte
+        data['number_of_chunks'] = size_of_file / 1048576
         url = ''.join([self.files_url, data['filepath']])
+
+        for chunk, offset in self.read_in_chunks(filepath):
+
+            status_code = self.upload_chunk(chunk, offset, url, data)
+
+            if status_code == 201:
+                print (100 * (offset + len(chunk))) / size_of_file, "% Uploaded"
+                print "Upload Successfully"
+                return status_code
+            elif status_code == 200:
+                print (100 * (offset + len(chunk))) / size_of_file, "% Uploaded"
+            else:
+                print "upload failed {}".format(status_code)
+
+
+    def read_in_chunks(self, filepath, chunk_size=1048576):
+        """
+        Simple generator to read a file in chunks
+        :param filepath:
+        :param chunk_size: 1MB at time
+        :return:
+        """
 
         with open(filepath, 'rb') as f:
             while True:
+                offset = f.tell()
                 chunk = f.read(chunk_size)
                 if not chunk:
                     break
-                offset = f.tell()
-                try:
-                    r = requests.post(url, auth=self.auth, data={'md5': data['md5'], 'chunk': chunk, 'offset': offset})
-                    r.raise_for_status()
-                    if r.status_code == 201:
-                        # upload of file completed 201
-                        return True
-                    elif r.status_code == 200:
-                        # chunk completed 200
-                        print (100 * offset) / size_of_file, "% Uploaded"
-                except ConnectionManager.EXCEPTIONS_CATCHED as e:
-                    # f.seek(0)
-                    print e
-                    break
+                yield chunk, offset
 
 
-    def do_modify(self, data):
-        filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
-        url = ''.join([self.files_url, data['filepath']])
-
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_modify', url, data))
-
-        _file = {'file': (open(filepath, 'rb'))}
-        try:
-            r = requests.put(url, auth=self.auth, files=_file, data={'md5': data['md5']})
-            r.raise_for_status()
-        except ConnectionManager.EXCEPTIONS_CATCHED as e:
-            self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_modify', url, e))
-        else:
-            event_timestamp = json.loads(r.text)
-
-            return event_timestamp
-        return False
-
-    # actions:
-
-    def do_move(self, data):
-        url = ''.join([self.actions_url, 'move'])
-        d = {'src': data['src'], 'dst': data['dst']}
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_move', url, data))
-        try:
-            r = requests.post(url, auth=self.auth, data=d)
-            r.raise_for_status()
-        except ConnectionManager.EXCEPTIONS_CATCHED as e:
-            self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_move', url, e))
-        else:
-            event_timestamp = json.loads(r.text)
-
-            return event_timestamp
-        return False
-
-    def do_delete(self, data):
-        url = ''.join([self.actions_url, 'delete'])
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_delete', url, data))
-        d = {'filepath': data['filepath']}
-        try:
-            r = requests.post(url, auth=self.auth, data=d)
-            r.raise_for_status()
-        except ConnectionManager.EXCEPTIONS_CATCHED as e:
-            self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_delete', url, e))
-        else:
-            event_timestamp = json.loads(r.text)
-            return event_timestamp
-        return False
-
-    def do_copy(self, data):
-        url = ''.join([self.actions_url, 'copy'])
-        d = {'src': data['src'], 'dst': data['dst']}
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_copy', url, data))
-        try:
-            r = requests.post(url, auth=self.auth, data=d)
-            r.raise_for_status()
-        except ConnectionManager.EXCEPTIONS_CATCHED as e:
-            self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_copy', url, e))
-        else:
-            event_timestamp = json.loads(r.text)
-
-            return event_timestamp
-        return False
-
-    def do_get_server_snapshot(self, data):
-        url = self.files_url
-
-        self.logger.info('{}: URL: {} - DATA: {} '.format('do_get_server_snapshot', url, data))
+    def upload_chunk(self, chunk, offset, url, data):
+        """
+        Upload a single chunk
+        :param chunk:
+        :offset:
+        :param url:
+        :param data:
+        :return: status code 200 uploaded chunk, 201 file completed
+        """
 
         try:
-            r = requests.get(url, auth=self.auth)
+            print "try to upload chunk that starts at byte {0}".format(offset)
+            r = requests.post(url, auth=self.auth,
+                              data={'md5': data['md5'], 'chunk': chunk, 'offset': offset, 'number_of_chunks': data['number_of_chunks']})
             r.raise_for_status()
         except ConnectionManager.EXCEPTIONS_CATCHED as e:
+            # f.seek(0)
+            print e
 
-            self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_get_server_snapshot', url, e))
+        return r.status_code
 
-        else:
-            return json.loads(r.text)
 
-    def _default(self, method):
-        print 'Received Unknown Command:', method
+def do_modify(self, data):
+    filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
+    url = ''.join([self.files_url, data['filepath']])
+
+    self.logger.info('{}: URL: {} - DATA: {} '.format('do_modify', url, data))
+
+    _file = {'file': (open(filepath, 'rb'))}
+    try:
+        r = requests.put(url, auth=self.auth, files=_file, data={'md5': data['md5']})
+        r.raise_for_status()
+    except ConnectionManager.EXCEPTIONS_CATCHED as e:
+        self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_modify', url, e))
+    else:
+        event_timestamp = json.loads(r.text)
+
+        return event_timestamp
+    return False
+
+
+# actions:
+
+def do_move(self, data):
+    url = ''.join([self.actions_url, 'move'])
+    d = {'src': data['src'], 'dst': data['dst']}
+    self.logger.info('{}: URL: {} - DATA: {} '.format('do_move', url, data))
+    try:
+        r = requests.post(url, auth=self.auth, data=d)
+        r.raise_for_status()
+    except ConnectionManager.EXCEPTIONS_CATCHED as e:
+        self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_move', url, e))
+    else:
+        event_timestamp = json.loads(r.text)
+
+        return event_timestamp
+    return False
+
+
+def do_delete(self, data):
+    url = ''.join([self.actions_url, 'delete'])
+    self.logger.info('{}: URL: {} - DATA: {} '.format('do_delete', url, data))
+    d = {'filepath': data['filepath']}
+    try:
+        r = requests.post(url, auth=self.auth, data=d)
+        r.raise_for_status()
+    except ConnectionManager.EXCEPTIONS_CATCHED as e:
+        self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_delete', url, e))
+    else:
+        event_timestamp = json.loads(r.text)
+        return event_timestamp
+    return False
+
+
+def do_copy(self, data):
+    url = ''.join([self.actions_url, 'copy'])
+    d = {'src': data['src'], 'dst': data['dst']}
+    self.logger.info('{}: URL: {} - DATA: {} '.format('do_copy', url, data))
+    try:
+        r = requests.post(url, auth=self.auth, data=d)
+        r.raise_for_status()
+    except ConnectionManager.EXCEPTIONS_CATCHED as e:
+        self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_copy', url, e))
+    else:
+        event_timestamp = json.loads(r.text)
+
+        return event_timestamp
+    return False
+
+
+def do_get_server_snapshot(self, data):
+    url = self.files_url
+
+    self.logger.info('{}: URL: {} - DATA: {} '.format('do_get_server_snapshot', url, data))
+
+    try:
+        r = requests.get(url, auth=self.auth)
+        r.raise_for_status()
+    except ConnectionManager.EXCEPTIONS_CATCHED as e:
+
+        self.logger.error('{}: URL: {} - EXCEPTION_CATCHED: {} '.format('do_get_server_snapshot', url, e))
+
+    else:
+        return json.loads(r.text)
+
+
+def _default(self, method):
+    print 'Received Unknown Command:', method
