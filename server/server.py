@@ -22,6 +22,7 @@ from flask.ext.mail import Mail, Message
 from werkzeug import secure_filename
 from passlib.hash import sha256_crypt
 import passwordmeter
+import base64
 
 __title__ = 'PyBOX'
 
@@ -105,6 +106,7 @@ logger.info('Server {} at {}'.format(launched_or_imported, datetime.datetime.now
 # =====================
 userdata = {}
 pending_users = {}
+megaupload_pending_files = {}
 
 app = Flask(__name__)
 app.testing = __name__ != '__main__'  # Reasonable assumption?
@@ -823,6 +825,10 @@ class Files(Resource):
         :param path: str
         """
         username = auth.username()
+        if 'offset' in request.form:
+            return self._manage_big_upload(request, path, username)
+        else:
+            print "NORMAL UPLOAD"
 
         upload_file = request.files['file']
         md5 = request.form['md5']
@@ -842,9 +848,106 @@ class Files(Resource):
 
         # Update and save <userdata>, and return the last server timestamp.
         last_server_timestamp = self._update_user_path(username, path)
-
         resp = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
         resp.status_code = HTTP_CREATED
+        return resp
+
+    def _manage_big_upload(self, r, path, username):
+
+        timeout = 5
+        offset = int(r.form['offset'])
+        chunk = base64.b64decode(r.form['chunk'])
+
+        dirname, filename = self._get_dirname_filename(path)
+        filepath = join(dirname, filename)
+        filepath_tmp = ''.join([dirname, filename, '.tmp'])
+
+        resp = jsonify({})
+
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+
+        # se già esiste
+        if os.path.isfile(filepath):
+            resp.status_code = HTTP_FORBIDDEN
+            return resp
+
+        # if an upload is pending
+        if filepath in megaupload_pending_files:
+            if megaupload_pending_files[filepath]['md5'] != r.form['md5']:
+                # if md5 is different than the first sent remove the tmp file and raise the error to the client
+                try:
+                    os.remove(filepath_tmp) # remove the tmp file
+                except OSError, e:
+                    print e
+                resp.status_code = HTTP_BAD_REQUEST # tell the client is a bad request
+                megaupload_pending_files.pop(filepath) # clean up the dictionary for pending files
+                return resp
+
+            if time.time() > megaupload_pending_files[filepath]['insertion_time'] + timeout:
+                # too late sorry, try again
+                try:
+                    os.remove(filepath_tmp)
+                except OSError, e:
+                    print e
+                resp.status_code = 408
+                # megaupload_pending_files.pop(filepath) # clean up the dictionary for pending files
+                print resp.status_code
+                return resp
+
+            with open(filepath_tmp,'rb') as f:
+                # some chunk is missing
+                if offset != len(f.read()):
+                    try:
+                        os.remove(filepath_tmp) # remove the tmp file
+                    except OSError, e:
+                        print e
+                    resp.status_code = HTTP_BAD_REQUEST
+                    megaupload_pending_files.pop(filepath) # clean up the dictionary for pending files
+                    return resp
+        # if an upload is not in pending means that is the first call
+        else:
+            if offset != 0:
+                # it's the first call and offset must be 0
+                resp.status_code = HTTP_BAD_REQUEST
+                return resp
+
+        # append the file
+        with open(filepath_tmp, 'ab') as f:
+            if offset == 0:
+                f.write(chunk)
+                megaupload_pending_files[filepath] = {'md5': r.form['md5'], 'insertion_time': time.time()}
+                resp.status_code = HTTP_OK
+            elif offset > 0 and offset + len(chunk) < int(r.form['file_size']):
+                f.write(chunk)
+                megaupload_pending_files[filepath]['insertion_time'] = time.time()
+                resp.status_code = HTTP_OK
+            elif offset + len(chunk) == int(r.form['file_size']):
+                f.write(chunk)
+                megaupload_pending_files[filepath]['insertion_time'] = time.time()
+                resp.status_code = HTTP_CREATED
+            elif offset + len(chunk) > int(r.form['file_size']):
+                # abort
+                pass
+
+        # all chunks arrived. verify if the file on server has the same md5 sent from client the first time
+        if resp.status_code == HTTP_CREATED:
+            with open(filepath_tmp, 'rb') as f:
+                if calculate_file_md5(f) == megaupload_pending_files[filepath]['md5']:
+                    try:
+                        os.rename(filepath_tmp, filepath)
+                        server_timestamp = self._update_user_path(username, path)
+                        resp = jsonify({LAST_SERVER_TIMESTAMP: server_timestamp})
+                        resp.status_code = HTTP_CREATED
+                    except OSError, e:
+                        print e
+                    megaupload_pending_files.pop(filepath)
+                else:
+                    resp.status_code = HTTP_CONFLICT
+                    megaupload_pending_files.pop(filepath)
+                    print "Upload finished but md5_tmp != md5_client"
+                    return resp
+
         return resp
 
     @auth.login_required
