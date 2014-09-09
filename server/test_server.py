@@ -17,6 +17,7 @@ import hashlib
 import tempfile
 import random
 import string
+import time
 
 import server
 from server import userpath2serverpath
@@ -1090,6 +1091,79 @@ class TestLoggingConfiguration(unittest.TestCase):
         reload(server)
         self.assertTrue(os.path.exists('log') and os.path.isdir('log'))
 
+
+class TestMegaUpload(unittest.TestCase):
+    """
+    Testing big file upload
+    """
+
+    def setUp(self):
+        setup_test_dir()
+
+        self.app = server.app.test_client()
+        self.app.testing = True
+        _manually_create_user(USR, PW)
+
+    def tearDown(self):
+        tear_down_test_dir()
+
+    def test_mega_upload_client_request(self):
+        """
+        Test the upload in chunks of a file with his size more than chunk_upload_threshold
+        :return:
+        """
+        user_relative_upload_filepath = 'megafile.ogg'
+
+        upload_test_url = SERVER_FILES_API + user_relative_upload_filepath
+        uploaded_filepath = userpath2serverpath(USR, user_relative_upload_filepath)
+
+        # create a file for the mega upload function
+        with open(user_relative_upload_filepath, 'wb') as f:
+            f.write('c'*10000000)
+
+        # generate md5 of this file
+        h = hashlib.md5()
+        with open(user_relative_upload_filepath, 'rb') as f:
+            h.update(f.read())
+            md5 = h.hexdigest()
+
+        # upload the file in chunk
+        i = 0
+        resp = None
+        for chunk, offset in self.read_in_chunks('megafile.ogg'):
+            resp = self.app.post(upload_test_url,
+                                 headers=make_basicauth_headers(USR, PW),
+                                 data={'md5': md5,
+                                       'offset': offset,
+                                       'chunk': base64.b64encode(chunk),
+                                       'file_size': str(os.path.getsize(user_relative_upload_filepath))},
+                                 follow_redirects=True)
+            if i == 8:
+                time.sleep(3)
+            i += 1
+
+        # verify the file is really there
+        self.assertEqual(os.path.isfile(uploaded_filepath), True)
+        # and not anymore in the pending upload
+        self.assertNotIn('megafile.ogg', server.megaupload_pending_files)
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("server_timestamp", resp.data)
+
+    def read_in_chunks(self, filepath, chunk_size=1048576):
+        """
+        Simple generator to read a file in chunks
+        :param filepath:
+        :param chunk_size: 1MB at time
+        :return:
+        """
+
+        with open(filepath, 'rb') as f:
+            while True:
+                offset = f.tell()
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk, offset
 
 if __name__ == '__main__':
     unittest.main()
