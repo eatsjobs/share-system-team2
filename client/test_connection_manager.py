@@ -383,32 +383,67 @@ class TestConnectionManager(unittest.TestCase):
         self.assertEqual(json.dumps(response), js)
 
     @httpretty.activate
-    def test_mega_upload(self):
+    def test_upload_chunk(self):
+        """
+        Test the function that mega upload function needs
+        :return:
+        """
         data = {'filepath': 'test_mega_file.txt'}
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
-        f = open(filepath, 'wb')
-        f.write('a' * 10000000)
-        f.close()
+
+        with open(filepath, 'wb') as f:
+            f.write('a' * 10000000)
+
         data['md5'] = hashlib.md5(open(filepath, 'rb').read()).digest()
 
         url = ''.join((self.files_url, 'test_mega_file.txt'))
-        httpretty.register_uri(httpretty.POST, url, status=200)
-        status_code = self.cm.do_upload(data)
+        httpretty.register_uri(httpretty.POST, url, responses=[
+                               httpretty.Response(body="0", status=200),
+                               httpretty.Response(body='1', status=200),
+                               httpretty.Response(body='2', status=201),
+                            ])
 
-        self.assertEqual(status_code, None)
+        for i in range(3):
+            chunk = i
+            offset = i
+            r = self.cm.upload_chunk(chunk, offset, url, data)
+            if i < 2:
+                self.assertEqual(r.status_code, 200)
+            elif i == 2:
+                print "file Uploaded"
+                self.assertEqual(r.status_code, 201)
 
     @httpretty.activate
-    def test_mega_upload_no_connection(self):
+    def test_do_mega_upload(self):
+        """
+        Test Mega Upload with no errors
+        :return:
+        """
         data = {'filepath': 'test_mega_file.txt'}
         filepath = os.path.join(self.cfg['sharing_path'], data['filepath'])
-        f = open(filepath, 'wb')
-        f.write('a' * 10000000)
-        f.close()
+
+        with open(filepath, 'wb') as f:
+            f.write('a' * 10485760)
+
         data['md5'] = hashlib.md5(open(filepath, 'rb').read()).digest()
 
         url = ''.join((self.files_url, 'test_mega_file.txt'))
-        httpretty.register_uri(httpretty.POST, url, status=404)
-        self.cm.do_mega_upload(data)
+        ts = long(time.time()*10000)
+        httpretty.register_uri(httpretty.POST, url,  responses=[
+                               httpretty.Response(body='0', status=200),
+                               httpretty.Response(body='2', status=200),
+                               httpretty.Response(body='3', status=200),
+                               httpretty.Response(body='4', status=200),
+                               httpretty.Response(body='5', status=200),
+                               httpretty.Response(body='6', status=200),
+                               httpretty.Response(body='7', status=200),
+                               httpretty.Response(body='8', status=200),
+                               httpretty.Response(body='9', status=200),
+                               httpretty.Response(body=str(ts), status=201),
+                            ])
+
+        server_timestamp = self.cm.do_upload(data)
+        self.assertEqual(server_timestamp, ts)
 
     def tearDown(self):
         httpretty.disable()
